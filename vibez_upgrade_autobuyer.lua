@@ -1722,8 +1722,28 @@ local function buildUI()
         Size = UDim2.fromOffset(620, 480),
         Transparent = true,
         Theme = "Dark",
+        ToggleKey = Enum.KeyCode.RightShift,
+        OpenButton = {
+            Title = "Vibez's Upgrade Tree",
+            Icon = "sparkles",
+            Enabled = true,
+            Draggable = true,
+            OnlyMobile = false,
+        },
     })
     State.Window = Window
+    if type(Window.EditOpenButton) == "function" then
+        pcall(Window.EditOpenButton, Window, {
+            Title = "Vibez's Upgrade Tree",
+            Icon = "sparkles",
+            Enabled = true,
+            Draggable = true,
+            OnlyMobile = false,
+        })
+    end
+    if type(Window.SetToggleKey) == "function" then
+        pcall(Window.SetToggleKey, Window, Enum.KeyCode.RightShift)
+    end
 
     local function registerToggle(tab, opts, getter, setter)
         local t = tab:Toggle({
