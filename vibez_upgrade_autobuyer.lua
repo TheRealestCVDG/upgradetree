@@ -929,8 +929,10 @@ function UpgradeAutobuyer:Step(isManual)
                 State.MovedByAutoTP = true
             end
             hrp.CFrame = CFrame.new(target.position + Vector3.new(0, 4, 0))
-            local settle = math.clamp(tonumber(Config.ApproachSettleDelay) or 0.08, 0.02, 0.5)
-            task.wait(settle)
+            local settle = math.clamp(tonumber(Config.ApproachSettleDelay) or 0.08, 0, 0.5)
+            if settle > 0 then
+                task.wait(settle)
+            end
             if State.Running and State.RunSerial == mySerial and (isManual or Config.AutoBuyEnabled) then
                 if self:FireNode(target, os.clock()) then
                     fired += 1
@@ -1096,7 +1098,7 @@ function ResetLayerController:Step()
         end
     end
 
-    local cooldown = math.max(0.5, tonumber(Config.ResetCooldownSeconds) or 3)
+    local cooldown = math.max(0, tonumber(Config.ResetCooldownSeconds) or 3)
     for _, def in ipairs(RESET_LAYER_DEFS) do
         if Config.ResetLayers[def.id] then
             local lastFire = self.LastLayerFireAt[def.id] or 0
@@ -1426,7 +1428,7 @@ function MiscController:StartLoops()
     task.spawn(function()
         local mySerial = State.RunSerial
         while State.Running and State.RunSerial == mySerial do
-            local interval = math.clamp(tonumber(Config.AtomCollectInterval) or 0.5, 0.2, 2.0)
+            local interval = math.clamp(tonumber(Config.AtomCollectInterval) or 0.5, 0, 2.0)
             if Config.AutoCollectAtoms then
                 local ownedAsc = LocalPlayer and LocalPlayer:FindFirstChild("OwnedAscensionButtons")
                 if ownedAsc and ownedAsc:FindFirstChild("Button11a") then
@@ -1695,7 +1697,7 @@ local function startEngineLoops()
             pcall(function()
                 ResetLayerController:Step()
             end)
-            local waitTime = math.clamp(tonumber(Config.ScanInterval) or 0.15, 0.05, 2.0)
+            local waitTime = math.clamp(tonumber(Config.ScanInterval) or 0.15, 0, 2.0)
             task.wait(waitTime)
         end
     end)
@@ -1888,7 +1890,7 @@ local function buildUI()
         Title = "Scan Interval (s)",
         Desc = "Delay between autobuyer ticks.",
         Step = 0.05,
-        Min = 0.05,
+        Min = 0,
         Max = 2.0,
     }, function() return Config.ScanInterval end, function(v) Config.ScanInterval = v end)
 
@@ -1932,7 +1934,7 @@ local function buildUI()
         Title = "TP Settle Delay (s)",
         Desc = "Wait after teleporting before firing ClickDetector.",
         Step = 0.01,
-        Min = 0.03,
+        Min = 0,
         Max = 0.50,
     }, function() return Config.ApproachSettleDelay end, function(v) Config.ApproachSettleDelay = v end)
 
@@ -1959,7 +1961,7 @@ local function buildUI()
         Title = "Countdown Seconds",
         Desc = "Seconds after latest upgrade bought before resetting.",
         Step = 1,
-        Min = 1,
+        Min = 0,
         Max = 300,
     }, function() return Config.ResetCountdownSeconds end, function(v) Config.ResetCountdownSeconds = v end)
 
@@ -1967,7 +1969,7 @@ local function buildUI()
         Title = "Cooldown Between Resets (s)",
         Desc = "Minimum seconds between consecutive reset triggers.",
         Step = 0.5,
-        Min = 0.5,
+        Min = 0,
         Max = 60,
     }, function() return Config.ResetCooldownSeconds end, function(v) Config.ResetCooldownSeconds = v end)
 
@@ -2076,7 +2078,7 @@ local function buildUI()
         Title = "Auto Collect Atoms",
         Desc = "Fires CollectAtom once unlocked (Ascension Button11a).",
     }, function() return Config.AutoCollectAtoms end, function(v) Config.AutoCollectAtoms = v end)
-    registerSlider(TabMisc, { Title = "Atom Collect Interval (s)", Step = 0.1, Min = 0.2, Max = 2.0 }, function() return Config.AtomCollectInterval end, function(v) Config.AtomCollectInterval = v end)
+    registerSlider(TabMisc, { Title = "Atom Collect Interval (s)", Step = 0.1, Min = 0, Max = 2.0 }, function() return Config.AtomCollectInterval end, function(v) Config.AtomCollectInterval = v end)
 
     --// Tab 5: Configs
     local TabCfg = Window:Tab({ Title = "Configs", Icon = "save" })
