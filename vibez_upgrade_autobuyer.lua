@@ -241,6 +241,51 @@ local RESET_LAYER_DEFS = {
     { id = "HalloweenLoop", label = "Auto Halloween Loop", remote = "HalloweenLoopRequest", isClickButton = false },
 }
 
+local TREE_BRANCH = {
+    Basic = "Main",
+    Rebirth = "Main",
+    Sacrifice = "Main",
+    Ascension = "Main",
+    Blackhole = "Main",
+    Extra = "Useless",
+    UselessRebirth = "Useless",
+    Halloween = "Halloween",
+}
+
+local RESET_BRANCH_ORDER = { "Main", "Useless", "Halloween" }
+
+local RESET_BRANCH_PRIORITY = {
+    Main = { "Reboot", "DarkMatter", "Ascension", "Sacrifice", "Prestige", "Rebirth" },
+    Useless = { "UselessRebirth" },
+    Halloween = { "HalloweenLoop", "Ghost", "Zombie" },
+}
+
+local LAYER_BRANCH = {
+    Rebirth = "Main",
+    Prestige = "Main",
+    Sacrifice = "Main",
+    Ascension = "Main",
+    DarkMatter = "Main",
+    Reboot = "Main",
+    UselessRebirth = "Useless",
+    Zombie = "Halloween",
+    Ghost = "Halloween",
+    HalloweenLoop = "Halloween",
+}
+
+local LAYER_REWARD_STAT = {
+    Rebirth = "RebirthPoints",
+    Prestige = "Prestige",
+    Sacrifice = "Sacrifices",
+    Ascension = "Ascensions",
+    DarkMatter = "DarkMatter",
+    Reboot = "Reboot",
+    UselessRebirth = "UselessRebirthPoints",
+    Zombie = "Zombies",
+    Ghost = "Ghosts",
+    HalloweenLoop = "HalloweenLoop",
+}
+
 local DEFAULT_CONFIG = {
     AutoBuyEnabled = false,
     ScanInterval = 0.15,
@@ -318,10 +363,20 @@ local State = {
     Window = nil,
 
     LastUpgradeBoughtAt = os.clock(),
+    LastUpgradeBoughtAtByBranch = {
+        Main = os.clock(),
+        Useless = os.clock(),
+        Halloween = os.clock(),
+    },
     LastBuyTickAt = 0,
     SessionBuys = 0,
     TotalTickRuns = 0,
     LastResetAt = 0,
+    LastResetAtByBranch = {
+        Main = 0,
+        Useless = 0,
+        Halloween = 0,
+    },
     LastResetLayer = "None",
     LastActionMessage = "Idle (fail-closed on startup)",
     ActivityLog = {},
@@ -966,7 +1021,12 @@ end
 
 local ResetLayerController = {
     LastLayerFireAt = {},
+    LayerAttempts = {},
 }
+
+function ResetLayerController:ClearLayerBackoff()
+    self.LayerAttempts = {}
+end
 
 function ResetLayerController:CanTriggerLayer(layerId, snapshot)
     local c = snapshot.currencies
@@ -990,78 +1050,140 @@ function ResetLayerController:CanTriggerLayer(layerId, snapshot)
     elseif layerId == "Sacrifice" then
         return c.Prestige >= 5
     elseif layerId == "Ascension" then
-        return o.Sacrifice["Button38"] == true and c.Sacrifices >= 10000000
+        return o.Sacrifice["Button38"] == true and c.Prestige >= 5 and c.Sacrifices >= 2500000
     elseif layerId == "DarkMatter" then
-        return o.Blackhole["Button11m"] == true or c.DarkMatter > 0
+        return (o.Blackhole["Button11m"] == true or c.DarkMatter > 0) and c.Matter > 0
     elseif layerId == "Reboot" then
-        return c.DarkMatter >= 10 or c.Reboot >= 1
+        local requiredDM = 10
+        if c.Reboot >= 8 then
+            requiredDM = 100
+        elseif c.Reboot == 7 then
+            requiredDM = 75
+        elseif c.Reboot == 6 then
+            requiredDM = 50
+        elseif c.Reboot == 5 then
+            requiredDM = 25
+        end
+        return c.DarkMatter >= requiredDM
     elseif layerId == "UselessRebirth" then
         return o.Extra["UselessButton20"] == true and c.UselessPoints >= 10000000
     elseif layerId == "Zombie" then
-        return o.Halloween["Button15p"] == true or c.Zombies > 0
+        return (o.Halloween["Button15p"] == true or c.Zombies > 0) and c.Pumpkins >= 1000000000
     elseif layerId == "Ghost" then
-        return o.Halloween["Button11z"] == true or c.Ghosts > 0
+        return (o.Halloween["Button11z"] == true or c.Ghosts > 0) and c.Zombies >= 500
     elseif layerId == "HalloweenLoop" then
-        return o.Halloween["Button31g"] == true or c.HalloweenLoop > 0
+        return (o.Halloween["Button31g"] == true or c.HalloweenLoop > 0) and c.Ghosts > 0
     end
     return false
 end
 
-function ResetLayerController:FireLayer(layerId)
+function ResetLayerController:ReconcileLayerAttempts(snapshot, now)
+    now = now or os.clock()
+    for layerId, rec in pairs(self.LayerAttempts) do
+        local statName = LAYER_REWARD_STAT[layerId]
+        local currVal = statName and snapshot.currencies[statName] or nil
+        if type(currVal) == "number" and currVal > (rec.prevStat or 0) then
+            self.LayerAttempts[layerId] = nil
+            local branch = LAYER_BRANCH[layerId]
+            if branch then
+                State.LastResetAtByBranch[branch] = now
+                for key, _ in pairs(State.NodeAttempts) do
+                    local treeId = string.match(key, "^([^:]+):")
+                    if treeId and TREE_BRANCH[treeId] == branch then
+                        State.NodeAttempts[key] = nil
+                    end
+                end
+            end
+        elseif rec.pending and (now - (rec.firedAt or 0)) >= 0.4 then
+            rec.pending = false
+            rec.fails = (rec.fails or 0) + 1
+            local delay = math.min(4.0, 0.5 * (2 ^ (rec.fails - 1)))
+            rec.nextRetryAt = now + delay
+        end
+    end
+end
+
+function ResetLayerController:IsLayerBlocked(layerId, now)
+    local rec = self.LayerAttempts[layerId]
+    if not rec then
+        return false
+    end
+    if rec.pending and (now - (rec.firedAt or 0)) < 0.4 then
+        return true
+    end
+    if rec.nextRetryAt and now < rec.nextRetryAt then
+        return true
+    end
+    return false
+end
+
+function ResetLayerController:FireLayer(layerId, snapshot)
+    local now = os.clock()
+    local statName = LAYER_REWARD_STAT[layerId]
+    local prevStat = 0
+    if snapshot and statName and type(snapshot.currencies[statName]) == "number" then
+        prevStat = snapshot.currencies[statName]
+    else
+        local cur = GameState:GetCurrencies()
+        if statName and type(cur[statName]) == "number" then
+            prevStat = cur[statName]
+        end
+    end
+
+    local ok = false
     if layerId == "Prestige" then
         local rb = Workspace:FindFirstChild("RebirthButtons")
         local pb1 = rb and rb:FindFirstChild("PrestigeButton1")
         local cd = pb1 and pb1:FindFirstChildOfClass("ClickDetector")
         if cd then
-            local ok = SafeUtils.safeFireClickDetector(cd, 0)
-            if ok then
-                State.LastResetAt = os.clock()
-                State.LastResetLayer = layerId
-                self.LastLayerFireAt[layerId] = State.LastResetAt
-                logActivity("Triggered Reset Layer: Prestige")
-            end
-            return ok
+            ok = SafeUtils.safeFireClickDetector(cd, 0)
         end
-        return false
+    else
+        local events = ReplicatedStorage:FindFirstChild("Events")
+        local remoteName = nil
+        for _, def in ipairs(RESET_LAYER_DEFS) do
+            if def.id == layerId then
+                remoteName = def.remote
+                break
+            end
+        end
+        local rem = events and remoteName and events:FindFirstChild(remoteName)
+        if rem and rem:IsA("RemoteEvent") then
+            ok = SafeUtils.safeFireServer(rem)
+        end
     end
 
-    local events = ReplicatedStorage:FindFirstChild("Events")
-    if not events then
-        return false
-    end
-    local remoteName = nil
-    for _, def in ipairs(RESET_LAYER_DEFS) do
-        if def.id == layerId then
-            remoteName = def.remote
-            break
+    if ok then
+        State.LastResetAt = now
+        State.LastResetLayer = layerId
+        self.LastLayerFireAt[layerId] = now
+        local branch = LAYER_BRANCH[layerId]
+        if branch then
+            State.LastResetAtByBranch[branch] = now
         end
+        local prevRec = self.LayerAttempts[layerId]
+        self.LayerAttempts[layerId] = {
+            pending = true,
+            firedAt = now,
+            prevStat = prevStat,
+            fails = prevRec and prevRec.fails or 0,
+            nextRetryAt = nil,
+        }
+        logActivity("Triggered Reset Layer: " .. layerId)
     end
-    if not remoteName then
-        return false
-    end
-    local rem = events:FindFirstChild(remoteName)
-    if rem and rem:IsA("RemoteEvent") then
-        local ok = SafeUtils.safeFireServer(rem)
-        if ok then
-            State.LastResetAt = os.clock()
-            State.LastResetLayer = layerId
-            self.LastLayerFireAt[layerId] = State.LastResetAt
-            logActivity("Triggered Reset Layer: " .. layerId)
-        end
-        return ok
-    end
-    return false
+    return ok
 end
 
-function ResetLayerController:GetCountdownRemaining(now)
+function ResetLayerController:GetCountdownRemaining(now, branch)
     now = now or os.clock()
     if not Config.ResetTimerEnabled then
         return 0
     end
     local waitSec = math.max(0, tonumber(Config.ResetCountdownSeconds) or 0)
-    local anchor = State.LastUpgradeBoughtAt
-    if not Config.ResetRequireBuySinceReset and State.LastResetAt > anchor then
-        anchor = State.LastResetAt
+    local anchor = branch and (State.LastUpgradeBoughtAtByBranch[branch] or State.LastUpgradeBoughtAt) or State.LastUpgradeBoughtAt
+    local lastReset = branch and (State.LastResetAtByBranch[branch] or 0) or State.LastResetAt
+    if not Config.ResetRequireBuySinceReset and lastReset > anchor then
+        anchor = lastReset
     end
     local elapsed = now - anchor
     return math.max(0, waitSec - elapsed)
@@ -1083,28 +1205,60 @@ function ResetLayerController:Step()
     end
 
     local now = os.clock()
-    if self:GetCountdownRemaining(now) > 0 then
-        return
-    end
-    if Config.ResetRequireBuySinceReset and State.LastUpgradeBoughtAt <= State.LastResetAt then
-        return
-    end
-
     local snapshot = GameState:GetSnapshot()
+    self:ReconcileLayerAttempts(snapshot, now)
+
+    local eligibleByBranch = { Main = 0, Useless = 0, Halloween = 0 }
     if Config.ResetWaitUntilNoUpgrades then
         local plan = PurchasePolicy.Evaluate(snapshot, Config, State.NodeAttempts, now)
-        if (#plan.nearby + #plan.far) > 0 then
-            return
+        for _, node in ipairs(plan.nearby) do
+            local b = TREE_BRANCH[node.treeId]
+            if b then
+                eligibleByBranch[b] = (eligibleByBranch[b] or 0) + 1
+            end
+        end
+        for _, node in ipairs(plan.far) do
+            local b = TREE_BRANCH[node.treeId]
+            if b then
+                eligibleByBranch[b] = (eligibleByBranch[b] or 0) + 1
+            end
         end
     end
 
     local cooldown = math.max(0, tonumber(Config.ResetCooldownSeconds) or 3)
-    for _, def in ipairs(RESET_LAYER_DEFS) do
-        if Config.ResetLayers[def.id] then
-            local lastFire = self.LastLayerFireAt[def.id] or 0
-            if (now - lastFire) >= cooldown and self:CanTriggerLayer(def.id, snapshot) then
-                self:FireLayer(def.id)
+    for _, branch in ipairs(RESET_BRANCH_ORDER) do
+        local branchList = RESET_BRANCH_PRIORITY[branch]
+        local branchEnabled = false
+        for _, layerId in ipairs(branchList) do
+            if Config.ResetLayers[layerId] then
+                branchEnabled = true
                 break
+            end
+        end
+
+        if branchEnabled then
+            local branchReady = true
+            if self:GetCountdownRemaining(now, branch) > 0 then
+                branchReady = false
+            elseif Config.ResetRequireBuySinceReset and (State.LastUpgradeBoughtAtByBranch[branch] or 0) <= (State.LastResetAtByBranch[branch] or 0) then
+                branchReady = false
+            elseif Config.ResetWaitUntilNoUpgrades and (eligibleByBranch[branch] or 0) > 0 then
+                branchReady = false
+            end
+
+            if branchReady then
+                for _, layerId in ipairs(branchList) do
+                    if Config.ResetLayers[layerId] then
+                        local lastFire = self.LastLayerFireAt[layerId] or 0
+                        if (now - lastFire) >= cooldown
+                            and not self:IsLayerBlocked(layerId, now)
+                            and self:CanTriggerLayer(layerId, snapshot)
+                        then
+                            self:FireLayer(layerId, snapshot)
+                            break
+                        end
+                    end
+                end
             end
         end
     end
@@ -1663,10 +1817,15 @@ local function bindGameEvents()
     end
 
     for _, def in ipairs(TREE_DEFS) do
+        local branch = TREE_BRANCH[def.id]
         local ownedFolder = LocalPlayer and LocalPlayer:FindFirstChild(def.ownedFolder)
         if ownedFolder then
             trackConn(ownedFolder.ChildAdded:Connect(function(child)
-                State.LastUpgradeBoughtAt = os.clock()
+                local now = os.clock()
+                State.LastUpgradeBoughtAt = now
+                if branch then
+                    State.LastUpgradeBoughtAtByBranch[branch] = now
+                end
                 State.SessionBuys += 1
                 State.NodeAttempts[def.id .. ":" .. child.Name] = nil
             end))
@@ -1676,7 +1835,11 @@ local function bindGameEvents()
             if boughtEvent and boughtEvent:IsA("RemoteEvent") then
                 trackConn(boughtEvent.OnClientEvent:Connect(function(btnName)
                     if type(btnName) == "string" then
-                        State.LastUpgradeBoughtAt = os.clock()
+                        local now = os.clock()
+                        State.LastUpgradeBoughtAt = now
+                        if branch then
+                            State.LastUpgradeBoughtAtByBranch[branch] = now
+                        end
                         State.NodeAttempts[def.id .. ":" .. btnName] = nil
                     end
                 end))
@@ -1837,9 +2000,10 @@ local function buildUI()
 
     TabAuto:Button({
         Title = "Clear Pending / Backoff",
-        Desc = "Resets retry backoff timers for all buttons.",
+        Desc = "Resets retry backoff timers for all buttons and reset layers.",
         Callback = function()
             UpgradeAutobuyer:ClearBackoff()
+            ResetLayerController:ClearLayerBackoff()
         end,
     })
 
@@ -1991,6 +2155,7 @@ local function buildUI()
             Desc = "Automatically trigger " .. def.id .. " when requirements & timer are met.",
         }, function() return Config.ResetLayers[def.id] == true end, function(v)
             Config.ResetLayers[def.id] = v
+            ResetLayerController.LayerAttempts[def.id] = nil
         end)
 
         TabReset:Button({
